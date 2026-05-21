@@ -1,0 +1,29 @@
+{
+  "name": "dotpeek",
+  "version": "1.1.0",
+  "description": "Browse and search your shell aliases, functions, and exports across all dotfiles",
+  "bin": {
+    "dotpeek": "./bin/dotpeek.js"
+  },
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "ts-node src/index.ts",
+    "start": "node dist/index.js",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "dotfiles",
+    "alias",
+    "shell",
+    "bashrc",
+    "zshrc",
+    "cli",
+    "devtools"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  }
+}
