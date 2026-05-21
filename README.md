@@ -5,60 +5,63 @@ dotpeek auto-discovers your `.bashrc`, `.zshrc`, and shell config files and give
 
 ---
 
-## Install
-
-```bash
-npm install -g dotpeek
-```
-
-Or try it instantly:
-
-```bash
-npx dotpeek
-```
-
----
-
 ## Demo
 
 > *(gif here)*
 
 ---
 
-## Features
+## Install
 
-- **Auto-discovery** — finds your dotfiles automatically, no config needed
-- **Shell integration** — one command adds `peek` and `ctrl+p` to your shell permanently
-- **AI explanations** — press `a` on any command to get an instant plain-English description
-- **Danger detection** — flags commands with `rm -rf`, `DROP`, `nuke`, and other destructive keywords with ⚠
-- **Live search** — fuzzy search across all commands from all files as you type
-- **Zero dependencies** — pure Node.js, no `node_modules`
+**Requirements:** Node.js 18+
+
+```bash
+git clone https://github.com/estifanosbereket1/dotpeek
+cd dotpeek
+npm install
+npm run build
+npm link
+```
+
+`npm link` makes `dotpeek` available globally as a command. You only need to do this once.
+
+> **npm package coming soon** — `npm install -g dotpeek` and `npx dotpeek` will work once published.
 
 ---
 
-## Usage
+## Get an AI key (recommended)
+
+dotpeek works without AI, but the `a` key (explain command) needs a key to function. **Groq is free and takes 30 seconds to set up:**
+
+1. Go to **[console.groq.com](https://console.groq.com)** → sign up → API Keys → Create key
+2. Add it to your shell:
 
 ```bash
-dotpeek                        # open interactive browser
-dotpeek search deploy          # search from the terminal
-dotpeek list                   # list all commands
-dotpeek list --type alias      # filter by type: alias | func | export
-dotpeek list --danger          # show only dangerous commands
-dotpeek files                  # show which dotfiles were discovered
-dotpeek init                   # set up shell integration (peek + ctrl+p)
+echo 'export GROQ_API_KEY="your_key_here"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+That's it. dotpeek picks it up automatically — no config file needed. 14,400 free requests/day.
+
+---
+
+## Run it
+
+```bash
+dotpeek
 ```
 
 ---
 
 ## Shell integration
 
-Run once after installing:
+Run once to add `peek` and `ctrl+p` to your shell permanently:
 
 ```bash
 dotpeek init
 ```
 
-dotpeek detects your shell, shows you exactly what it will add, asks for confirmation, then appends a small snippet to your `.bashrc` or `.zshrc`. That's it.
+dotpeek detects your shell, shows you exactly what it will add, asks for confirmation, then appends a small snippet to your `.bashrc` or `.zshrc`.
 
 ```bash
 source ~/.zshrc     # reload to activate (or open a new terminal)
@@ -85,9 +88,32 @@ dotpeek --shell-snippet --shell bash
 
 ---
 
-## Interactive mode
+## Features
 
-Launch with `dotpeek` (or `peek`) and use your keyboard:
+- **Auto-discovery** — finds your dotfiles automatically, no config needed
+- **Shell integration** — one command adds `peek` and `ctrl+p` to your shell permanently
+- **AI explanations** — press `a` on any command to get an instant plain-English description
+- **Danger detection** — flags commands with `rm -rf`, `DROP`, `nuke`, and other destructive keywords with ⚠
+- **Live search** — fuzzy search across all commands from all files as you type
+- **Zero dependencies** — pure Node.js, no runtime `node_modules`
+
+---
+
+## Usage
+
+```bash
+dotpeek                        # open interactive browser
+dotpeek search deploy          # search from the terminal
+dotpeek list                   # list all commands
+dotpeek list --type alias      # filter by type: alias | func | export
+dotpeek list --danger          # show only dangerous commands
+dotpeek files                  # show which dotfiles were discovered
+dotpeek init                   # set up shell integration (peek + ctrl+p)
+```
+
+---
+
+## Interactive mode
 
 | Key | Action |
 |-----|--------|
@@ -102,21 +128,19 @@ Launch with `dotpeek` (or `peek`) and use your keyboard:
 
 ---
 
-## AI explanations
+## AI providers
 
-dotpeek auto-detects whichever AI provider you have available:
+dotpeek tries these in order and uses the first one available:
 
 | Priority | Provider | How to enable |
 |----------|----------|---------------|
-| 1 | Groq (free) | `export GROQ_API_KEY="..."` |
+| 1 | **Groq** (recommended, free) | `export GROQ_API_KEY="..."` |
 | 2 | Claude CLI | install `@anthropic-ai/claude-code` |
 | 3 | Gemini CLI | install `@google/gemini-cli` |
 | 4 | Anthropic API | `export ANTHROPIC_API_KEY="..."` |
 | 5 | OpenAI API | `export OPENAI_API_KEY="..."` |
 
-No config file needed — just set a key and dotpeek picks it up. Results are cached in `~/.dotpeek_ai_cache.json` so the same command is never fetched twice.
-
-Get a free Groq key at **console.groq.com** — 14,400 requests/day, no billing required.
+Results are cached in `~/.dotpeek_ai_cache.json` so the same command is never explained twice.
 
 ---
 
@@ -177,6 +201,7 @@ alias deploy='git push origin main && ./deploy.sh'
 - [ ] Config file at `~/.config/dotpeek/config.toml`
 - [ ] `.env` file support
 - [ ] Shell completion for `dotpeek search`
+- [ ] `npm publish`
 
 ---
 
