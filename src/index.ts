@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-
 import { discoverDotfiles, readDotfile } from "./discover";
 import { parseDotfile } from "./parser";
 import { search } from "./search";
 import { runInteractiveUI } from "./ui";
 import { c, typeTag, dangerBadge } from "./highlight";
 import { runInit, printSnippet } from "./shell";
+import { applyStoredKeys } from "./keys";
 import { Command } from "./types";
 
 const VERSION = "1.2.0";
@@ -23,7 +23,6 @@ ${c.bold("Usage:")}
   dotpeek init                     set up shell integration (peek + ctrl+p)
   dotpeek init --shell bash|zsh    specify shell explicitly
   dotpeek --shell-snippet          print raw shell snippet (for manual install)
-  dotpeek --shell-snippet --shell zsh
   dotpeek --help                   show this help
 
 ${c.bold("Interactive mode keys:")}
@@ -31,6 +30,7 @@ ${c.bold("Interactive mode keys:")}
   enter        expand command
   a            explain with AI
   c            copy raw command
+  k            manage AI keys
   type         search / filter
   tab          cycle type filter
   esc          clear search
@@ -68,6 +68,9 @@ function printCommand(cmd: Command): void {
 }
 
 async function main(): Promise<void> {
+  // load keys saved via the in-app key manager before anything else
+  applyStoredKeys();
+
   const args = process.argv.slice(2);
   const cmd = args[0];
 
@@ -79,14 +82,10 @@ async function main(): Promise<void> {
     console.log(VERSION);
     process.exit(0);
   }
-
-  // print raw snippet for manual install (e.g. pipe into a file or inspect)
   if (cmd === "--shell-snippet") {
     printSnippet(args.slice(1));
     process.exit(0);
   }
-
-  // guided shell integration setup
   if (cmd === "init") {
     await runInit(args.slice(1));
     process.exit(0);

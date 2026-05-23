@@ -1,7 +1,8 @@
 import readline from "readline";
 import { execSync } from "child_process";
 import { c, typeTag, dangerBadge, highlight } from "./highlight";
-import { explainCommand } from "./ai";
+import { explainCommand, detectProvider } from "./ai";
+import { PROVIDERS, maskKey, saveKey, deleteKey } from "./keys";
 import {
   Command,
   ScoredCommand,
@@ -71,38 +72,118 @@ function renderSplash(commandCount: number): string {
   const LOGO_WIDTH = 60;
   const leftPad = Math.max(2, Math.floor((width - LOGO_WIDTH) / 2));
   const pad = " ".repeat(leftPad);
-
-  const CONTENT_HEIGHT = 16;
+  const CONTENT_HEIGHT = 18;
   const topPad = Math.max(1, Math.floor((height - CONTENT_HEIGHT) / 2));
 
   const lines: string[] = [];
-
   for (let i = 0; i < topPad; i++) lines.push("");
 
-  for (const row of LOGO) {
-    lines.push(pad + c.boldCyan(row));
-  }
+  for (const row of LOGO) lines.push(pad + c.boldCyan(row));
 
   lines.push("");
   lines.push(pad + c.dim("  browse & search your shell commands"));
   lines.push("");
 
-  const features = [
+  const features: [string, string][] = [
     [
       "auto-discovers",
       `all your dotfiles  ${c.dim(`(${commandCount} commands loaded)`)}`,
     ],
-    ["AI explanations", "for any command, press  " + c.cyan("a")],
+    ["AI explanations", `for any command — press ${c.cyan("a")}`],
     ["live fuzzy search", "across everything as you type"],
-    ["danger detection", "⚠  flags risky commands automatically"],
+    ["danger detection", `⚠  flags risky commands automatically`],
   ];
-
   for (const [bold, rest] of features) {
     lines.push(pad + `  ${c.cyan("◆")}  ${c.bold(bold)}  ${c.dim(rest)}`);
   }
 
   lines.push("");
+
+  const activeProvider = detectProvider();
+  if (activeProvider) {
+    lines.push(
+      pad + `  ${c.green("◆")}  AI ready  ${c.dim("(" + activeProvider + ")")}`,
+    );
+  } else {
+    lines.push(
+      pad +
+        `  ${c.yellow("◆")}  ${c.yellow("no AI key set")}  ${c.dim("— press any key, then  ")}${c.cyan("k")}${c.dim("  to add one")}`,
+    );
+  }
+
+  lines.push("");
   lines.push(pad + c.dim("  ── press any key to start ──"));
+  lines.push("");
+
+  return lines.join("\n");
+}
+
+function renderKeys(
+  selected: number,
+  editing: boolean,
+  editBuf: string,
+): string {
+  const width = process.stdout.columns ?? 100;
+  const activeProvider = detectProvider();
+  const lines: string[] = [];
+
+  lines.push("");
+  lines.push(`  ${c.boldCyan("dotpeek")}  ${c.dim("─")}  ${c.bold("AI keys")}`);
+  lines.push(`  ${c.dim("─".repeat(Math.min(width - 4, 60)))}`);
+  lines.push("");
+
+  // active provider banner
+  if (activeProvider) {
+    lines.push(
+      `  ${c.green("◆")}  active provider: ${c.boldGreen(activeProvider)}`,
+    );
+  } else {
+    lines.push(`  ${c.yellow("◆")}  no active provider — add a key below`);
+  }
+
+  lines.push("");
+  lines.push(
+    `  ${c.dim("Saved to ~/.config/dotpeek/keys · loaded automatically on every start.")}`,
+  );
+  lines.push("");
+
+  for (let i = 0; i < PROVIDERS.length; i++) {
+    const p = PROVIDERS[i];
+    const isSelected = i === selected;
+    const isActive = activeProvider === p.providerId;
+    const currentVal = process.env[p.envKey] ?? "";
+    const isSet = !!currentVal;
+    const arrow = isSelected ? c.cyan("▶") : " ";
+
+    if (editing && isSelected) {
+      // edit mode for this row
+      const display =
+        editBuf.length > 0 ? c.cyan(editBuf) : c.dim("paste or type key...");
+      lines.push(`  ${arrow}  ${c.bold(p.envKey)}`);
+      lines.push(`          ${c.dim("value: ")}${display}${c.dim("█")}`);
+      lines.push(`          ${c.dim("enter to save · esc to cancel")}`);
+    } else {
+      const status = isSet
+        ? c.green("✓") +
+          "  " +
+          c.dim(maskKey(currentVal)) +
+          (isActive ? "  " + c.boldGreen("[active]") : "")
+        : c.gray("✗") + "  " + c.dim("not set");
+
+      lines.push(`  ${arrow}  ${c.bold(p.envKey.padEnd(24))} ${status}`);
+      lines.push(`          ${c.dim(p.label + " — " + p.note)}`);
+    }
+    lines.push("");
+  }
+
+  lines.push(`  ${c.dim("─".repeat(Math.min(width - 4, 60)))}`);
+  lines.push("");
+
+  if (editing) {
+    lines.push(`  ${c.dim("enter  save   esc  cancel")}`);
+  } else {
+    lines.push(`  ${c.dim("↑↓ navigate   enter edit   d clear   esc back")}`);
+  }
   lines.push("");
 
   return lines.join("\n");
@@ -197,7 +278,7 @@ function renderList(
 
   lines.push("");
   lines.push(
-    `  ${c.dim("↑↓ navigate   enter expand   / search   tab filter   q quit")}`,
+    `  ${c.dim("↑↓ navigate   enter expand   / search   tab filter   k keys   q quit")}`,
   );
   lines.push("");
   return lines.join("\n");
@@ -228,12 +309,19 @@ export async function runInteractiveUI(
   readline.emitKeypressEvents(process.stdin);
   process.stdin.setRawMode(true);
 
+  // list state
   let query = "";
   let filterIdx = 0;
   let selected = 0;
   let scrollOffset = 0;
-  let mode: "splash" | "list" | "detail" = "splash";
   let currentAiState: AIStatus | null = null;
+
+  // keys screen state
+  let keysSelected = 0;
+  let keysEditing = false;
+  let keysEditBuf = "";
+
+  let mode: "splash" | "list" | "detail" | "keys" = "splash";
 
   function getFiltered(): ScoredCommand[] {
     const filter = FILTERS[filterIdx];
@@ -254,6 +342,10 @@ export async function runInteractiveUI(
     clearScreen();
     if (mode === "splash") {
       process.stdout.write(renderSplash(allCommands.length));
+      return;
+    }
+    if (mode === "keys") {
+      process.stdout.write(renderKeys(keysSelected, keysEditing, keysEditBuf));
       return;
     }
     const cmds = getFiltered();
@@ -293,6 +385,52 @@ export async function runInteractiveUI(
       if (key.ctrl && key.name === "c") cleanExit(0);
       mode = "list";
       draw();
+      return;
+    }
+
+    if (mode === "keys") {
+      if (keysEditing) {
+        if (key.ctrl && key.name === "c") cleanExit(0);
+
+        if (key.name === "return") {
+          const trimmed = keysEditBuf.trim();
+          if (trimmed) saveKey(PROVIDERS[keysSelected].envKey, trimmed);
+          keysEditing = false;
+          keysEditBuf = "";
+          draw();
+        } else if (key.name === "escape") {
+          keysEditing = false;
+          keysEditBuf = "";
+          draw();
+        } else if (key.name === "backspace") {
+          keysEditBuf = keysEditBuf.slice(0, -1);
+          draw();
+        } else if (str && str.length === 1 && !key.ctrl && !key.meta) {
+          keysEditBuf += str;
+          draw();
+        }
+        return;
+      }
+
+      if (key.ctrl && key.name === "c") cleanExit(0);
+
+      if (key.name === "escape" || key.name === "q") {
+        mode = "list";
+        draw();
+      } else if (key.name === "up") {
+        keysSelected = Math.max(0, keysSelected - 1);
+        draw();
+      } else if (key.name === "down") {
+        keysSelected = Math.min(PROVIDERS.length - 1, keysSelected + 1);
+        draw();
+      } else if (key.name === "return") {
+        keysEditing = true;
+        keysEditBuf = "";
+        draw();
+      } else if (str === "d") {
+        deleteKey(PROVIDERS[keysSelected].envKey);
+        draw();
+      }
       return;
     }
 
@@ -339,6 +477,12 @@ export async function runInteractiveUI(
         currentAiState = null;
         draw();
       }
+    } else if (str === "k") {
+      mode = "keys";
+      keysSelected = 0;
+      keysEditing = false;
+      keysEditBuf = "";
+      draw();
     } else if (key.name === "backspace") {
       query = query.slice(0, -1);
       selected = 0;
