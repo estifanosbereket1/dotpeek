@@ -21,6 +21,23 @@ type SearchFn = (
   opts?: SearchOptions,
 ) => ScoredCommand[];
 
+const LOGO = [
+  "██████╗  ██████╗ ████████╗██████╗ ███████╗███████╗██╗  ██╗",
+  "██╔══██╗██╔═══██╗╚══██╔══╝██╔══██╗██╔════╝██╔════╝██║ ██╔╝",
+  "██║  ██║██║   ██║   ██║   ██████╔╝█████╗  █████╗  █████╔╝ ",
+  "██║  ██║██║   ██║   ██║   ██╔═══╝ ██╔══╝  ██╔══╝  ██╔═██╗ ",
+  "██████╔╝╚██████╔╝   ██║   ██║     ███████╗███████╗██║  ██╗ ",
+  "╚═════╝  ╚═════╝    ╚═╝   ╚═╝     ╚══════╝╚══════╝╚═╝  ╚═╝",
+];
+
+function cleanExit(code = 0): never {
+  try {
+    process.stdout.write("\x1b[2J\x1b[H");
+    if (process.stdin.isTTY) process.stdin.setRawMode(false);
+  } catch {}
+  process.exit(code);
+}
+
 function execCopy(text: string): void {
   const platform = process.platform;
   if (platform === "darwin") {
@@ -47,19 +64,48 @@ function formatSourceFile(filePath: string): string {
   return filePath.replace(process.env.HOME ?? "", "~");
 }
 
-// Clears the TUI from the screen so the shell prompt reappears cleanly.
-// This matters especially for the ctrl+p zsh widget without it, the TUI
-// content lingers until zle redraws, which looks messy.
-function cleanExit(code = 0): never {
-  try {
-    // clear screen and move cursor to top-left
-    process.stdout.write("\x1b[2J\x1b[H");
-    // restore terminal from raw mode
-    if (process.stdin.isTTY) process.stdin.setRawMode(false);
-  } catch {
-    // best-effort: don't let cleanup crash the exit
+function renderSplash(commandCount: number): string {
+  const width = process.stdout.columns ?? 100;
+  const height = process.stdout.rows ?? 30;
+
+  const LOGO_WIDTH = 60;
+  const leftPad = Math.max(2, Math.floor((width - LOGO_WIDTH) / 2));
+  const pad = " ".repeat(leftPad);
+
+  const CONTENT_HEIGHT = 16;
+  const topPad = Math.max(1, Math.floor((height - CONTENT_HEIGHT) / 2));
+
+  const lines: string[] = [];
+
+  for (let i = 0; i < topPad; i++) lines.push("");
+
+  for (const row of LOGO) {
+    lines.push(pad + c.boldCyan(row));
   }
-  process.exit(code);
+
+  lines.push("");
+  lines.push(pad + c.dim("  browse & search your shell commands"));
+  lines.push("");
+
+  const features = [
+    [
+      "auto-discovers",
+      `all your dotfiles  ${c.dim(`(${commandCount} commands loaded)`)}`,
+    ],
+    ["AI explanations", "for any command, press  " + c.cyan("a")],
+    ["live fuzzy search", "across everything as you type"],
+    ["danger detection", "⚠  flags risky commands automatically"],
+  ];
+
+  for (const [bold, rest] of features) {
+    lines.push(pad + `  ${c.cyan("◆")}  ${c.bold(bold)}  ${c.dim(rest)}`);
+  }
+
+  lines.push("");
+  lines.push(pad + c.dim("  ── press any key to start ──"));
+  lines.push("");
+
+  return lines.join("\n");
 }
 
 function renderCommandDetail(cmd: Command, aiState: AIStatus | null): string {
@@ -176,8 +222,6 @@ export async function runInteractiveUI(
     return;
   }
 
-  // Safety net: if the process is killed externally, restore the terminal.
-  // Without this, a crash in raw mode leaves the user's shell unusable.
   process.once("SIGTERM", () => cleanExit(0));
   process.once("SIGHUP", () => cleanExit(0));
 
@@ -188,7 +232,7 @@ export async function runInteractiveUI(
   let filterIdx = 0;
   let selected = 0;
   let scrollOffset = 0;
-  let mode: "list" | "detail" = "list";
+  let mode: "splash" | "list" | "detail" = "splash";
   let currentAiState: AIStatus | null = null;
 
   function getFiltered(): ScoredCommand[] {
@@ -208,6 +252,10 @@ export async function runInteractiveUI(
 
   function draw(): void {
     clearScreen();
+    if (mode === "splash") {
+      process.stdout.write(renderSplash(allCommands.length));
+      return;
+    }
     const cmds = getFiltered();
     clampSelected(cmds);
     if (mode === "detail" && cmds[selected]) {
@@ -241,30 +289,35 @@ export async function runInteractiveUI(
   draw();
 
   process.stdin.on("keypress", (str: string, key: readline.Key) => {
-    const cmds = getFiltered();
+    if (mode === "splash") {
+      if (key.ctrl && key.name === "c") cleanExit(0);
+      mode = "list";
+      draw();
+      return;
+    }
 
     if (mode === "detail") {
       if (key.name === "q" || key.name === "escape") {
         mode = "list";
         currentAiState = null;
         draw();
-      } else if (key.name === "return" || str === "c") {
+      } else if (str === "c") {
+        const cmds = getFiltered();
         if (cmds[selected])
           try {
             execCopy(cmds[selected].raw);
           } catch {}
       } else if (str === "a") {
+        const cmds = getFiltered();
         if (cmds[selected] && !currentAiState) triggerAI(cmds[selected]);
       }
       return;
     }
 
-    if (key.ctrl && key.name === "c") {
-      cleanExit(0);
-    }
-    if (key.name === "q") {
-      cleanExit(0);
-    }
+    const cmds = getFiltered();
+
+    if (key.ctrl && key.name === "c") cleanExit(0);
+    if (key.name === "q") cleanExit(0);
 
     if (key.name === "up") {
       selected = Math.max(0, selected - 1);
