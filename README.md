@@ -7,7 +7,7 @@ dotpeek auto-discovers your `.bashrc`, `.zshrc`, and shell config files and give
 
 ## Demo
 
-![dotpeek in action](./assets/demo-dot-final.gif)
+![dotpeek in action](./assets/dotpeek-final-demo-display.gif)
 
 ---
 
