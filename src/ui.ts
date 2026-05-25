@@ -3,12 +3,21 @@ import { execSync } from "child_process";
 import { c, typeTag, dangerBadge, highlight } from "./highlight";
 import { explainCommand, detectProvider } from "./ai";
 import { PROVIDERS, maskKey, saveKey, deleteKey } from "./keys";
+import { discoverDotfiles } from "./discover";
+import {
+  appendCommand,
+  replaceCommand,
+  extractValue,
+  NewCommand,
+  formatCommand,
+} from "./writer";
 import {
   Command,
   ScoredCommand,
   AIStatus,
   SearchOptions,
   CommandType,
+  DotFile,
 } from "./types";
 
 const ROWS = process.stdout.rows ?? 30;
@@ -21,6 +30,7 @@ type SearchFn = (
   query: string,
   opts?: SearchOptions,
 ) => ScoredCommand[];
+type ReloadFn = () => Command[];
 
 const LOGO = [
   "██████╗  ██████╗ ████████╗██████╗ ███████╗███████╗██╗  ██╗",
@@ -31,6 +41,37 @@ const LOGO = [
   "╚═════╝  ╚═════╝    ╚═╝   ╚═╝     ╚══════╝╚══════╝╚═╝  ╚═╝",
 ];
 
+const FORM_TYPES: { type: CommandType; hint: string }[] = [
+  { type: "alias", hint: "alias name='command'" },
+  { type: "func", hint: "name() { body; }" },
+  { type: "export", hint: "export NAME=value" },
+];
+
+type FormStep = "type" | "name" | "value" | "desc" | "file" | "confirm";
+
+function commandPreview(
+  typeIdx: number,
+  name: string,
+  value: string,
+  desc: string,
+): string {
+  const t = FORM_TYPES[typeIdx].type;
+  const lines: string[] = [];
+  if (desc) lines.push(c.dim(`# ${desc}`));
+  const n = name || c.dim("name");
+  const v = value || c.dim("...");
+  if (t === "alias") {
+    lines.push(c.cyan(`alias ${n}='${v}'`));
+  } else if (t === "export") {
+    lines.push(c.cyan(`export ${name || c.dim("NAME")}=${v}`));
+  } else {
+    lines.push(c.cyan(`${n}() {`));
+    lines.push(c.cyan(`  ${v}`));
+    lines.push(c.cyan(`}`));
+  }
+  return lines.join("\n");
+}
+
 function cleanExit(code = 0): never {
   try {
     process.stdout.write("\x1b[2J\x1b[H");
@@ -40,35 +81,40 @@ function cleanExit(code = 0): never {
 }
 
 function execCopy(text: string): void {
-  const platform = process.platform;
-  if (platform === "darwin") {
+  const p = process.platform;
+  if (p === "darwin") {
     execSync("pbcopy", { input: text });
-  } else if (platform === "win32") {
-    execSync("clip", { input: text });
-  } else {
-    try {
-      execSync("xclip -selection clipboard", { input: text });
-      return;
-    } catch {}
-    try {
-      execSync("xsel --clipboard --input", { input: text });
-      return;
-    } catch {}
-    try {
-      execSync("wl-copy", { input: text });
-      return;
-    } catch {}
+    return;
   }
+  if (p === "win32") {
+    execSync("clip", { input: text });
+    return;
+  }
+  try {
+    execSync("xclip -selection clipboard", { input: text });
+    return;
+  } catch {}
+  try {
+    execSync("xsel --clipboard --input", { input: text });
+    return;
+  } catch {}
+  try {
+    execSync("wl-copy", { input: text });
+    return;
+  } catch {}
 }
 
-function formatSourceFile(filePath: string): string {
-  return filePath.replace(process.env.HOME ?? "", "~");
+function formatSourceFile(p: string): string {
+  return p.replace(process.env.HOME ?? "", "~");
+}
+
+function clearScreen(): void {
+  process.stdout.write("\x1b[2J\x1b[H");
 }
 
 function renderSplash(commandCount: number): string {
   const width = process.stdout.columns ?? 100;
   const height = process.stdout.rows ?? 30;
-
   const LOGO_WIDTH = 60;
   const leftPad = Math.max(2, Math.floor((width - LOGO_WIDTH) / 2));
   const pad = " ".repeat(leftPad);
@@ -77,9 +123,7 @@ function renderSplash(commandCount: number): string {
 
   const lines: string[] = [];
   for (let i = 0; i < topPad; i++) lines.push("");
-
   for (const row of LOGO) lines.push(pad + c.boldCyan(row));
-
   lines.push("");
   lines.push(pad + c.dim("  browse & search your shell commands"));
   lines.push("");
@@ -91,14 +135,13 @@ function renderSplash(commandCount: number): string {
     ],
     ["AI explanations", `for any command — press ${c.cyan("a")}`],
     ["live fuzzy search", "across everything as you type"],
-    ["danger detection", `⚠  flags risky commands automatically`],
+    ["add & edit", `commands from inside the app — press ${c.cyan("n")}`],
   ];
   for (const [bold, rest] of features) {
     lines.push(pad + `  ${c.cyan("◆")}  ${c.bold(bold)}  ${c.dim(rest)}`);
   }
 
   lines.push("");
-
   const activeProvider = detectProvider();
   if (activeProvider) {
     lines.push(
@@ -107,14 +150,13 @@ function renderSplash(commandCount: number): string {
   } else {
     lines.push(
       pad +
-        `  ${c.yellow("◆")}  ${c.yellow("no AI key set")}  ${c.dim("— press any key, then  ")}${c.cyan("k")}${c.dim("  to add one")}`,
+        `  ${c.yellow("◆")}  ${c.yellow("no AI key")}  ${c.dim("— press any key, then  ")}${c.cyan("k")}${c.dim("  to add one")}`,
     );
   }
 
   lines.push("");
   lines.push(pad + c.dim("  ── press any key to start ──"));
   lines.push("");
-
   return lines.join("\n");
 }
 
@@ -132,7 +174,6 @@ function renderKeys(
   lines.push(`  ${c.dim("─".repeat(Math.min(width - 4, 60)))}`);
   lines.push("");
 
-  // active provider banner
   if (activeProvider) {
     lines.push(
       `  ${c.green("◆")}  active provider: ${c.boldGreen(activeProvider)}`,
@@ -140,7 +181,6 @@ function renderKeys(
   } else {
     lines.push(`  ${c.yellow("◆")}  no active provider — add a key below`);
   }
-
   lines.push("");
   lines.push(
     `  ${c.dim("Saved to ~/.config/dotpeek/keys · loaded automatically on every start.")}`,
@@ -156,7 +196,6 @@ function renderKeys(
     const arrow = isSelected ? c.cyan("▶") : " ";
 
     if (editing && isSelected) {
-      // edit mode for this row
       const display =
         editBuf.length > 0 ? c.cyan(editBuf) : c.dim("paste or type key...");
       lines.push(`  ${arrow}  ${c.bold(p.envKey)}`);
@@ -169,7 +208,6 @@ function renderKeys(
           c.dim(maskKey(currentVal)) +
           (isActive ? "  " + c.boldGreen("[active]") : "")
         : c.gray("✗") + "  " + c.dim("not set");
-
       lines.push(`  ${arrow}  ${c.bold(p.envKey.padEnd(24))} ${status}`);
       lines.push(`          ${c.dim(p.label + " — " + p.note)}`);
     }
@@ -178,14 +216,119 @@ function renderKeys(
 
   lines.push(`  ${c.dim("─".repeat(Math.min(width - 4, 60)))}`);
   lines.push("");
-
   if (editing) {
     lines.push(`  ${c.dim("enter  save   esc  cancel")}`);
   } else {
     lines.push(`  ${c.dim("↑↓ navigate   enter edit   d clear   esc back")}`);
   }
   lines.push("");
+  return lines.join("\n");
+}
 
+function renderForm(
+  step: FormStep,
+  typeIdx: number,
+  name: string,
+  value: string,
+  desc: string,
+  fileIdx: number,
+  files: DotFile[],
+  isEdit: boolean,
+  savedTo: string,
+  errorMsg: string,
+): string {
+  const width = process.stdout.columns ?? 100;
+  const lines: string[] = [];
+  const title = isEdit ? "edit command" : "add command";
+
+  lines.push("");
+  lines.push(`  ${c.boldCyan("dotpeek")}  ${c.dim("─")}  ${c.bold(title)}`);
+  lines.push(`  ${c.dim("─".repeat(Math.min(width - 4, 60)))}`);
+  lines.push("");
+
+  if (step === "confirm") {
+    lines.push(
+      `  ${c.green("✓")}  ${isEdit ? "Updated" : "Saved"} to ${c.cyan(savedTo)}`,
+    );
+    lines.push("");
+    lines.push(`  ${c.dim("The list will refresh when you go back.")}`);
+    lines.push("");
+    lines.push(`  ${c.dim("press any key to continue")}`);
+    lines.push("");
+    return lines.join("\n");
+  }
+
+  if (step !== "type") {
+    lines.push(`  ${c.dim("preview:")}`);
+    for (const pl of commandPreview(typeIdx, name, value, desc).split("\n")) {
+      lines.push(`    ${pl}`);
+    }
+    lines.push("");
+  }
+
+  if (errorMsg) {
+    lines.push(`  ${c.red("✗")}  ${c.red(errorMsg)}`);
+    lines.push("");
+  }
+
+  if (step === "type") {
+    lines.push(`  ${c.bold("Choose type:")}`);
+    lines.push("");
+    for (let i = 0; i < FORM_TYPES.length; i++) {
+      const ft = FORM_TYPES[i];
+      const arrow = i === typeIdx ? c.cyan("▶") : " ";
+      const tag = typeTag(ft.type);
+      lines.push(`  ${arrow}  ${tag}  ${c.dim(ft.hint)}`);
+    }
+    lines.push("");
+    lines.push(`  ${c.dim("↑↓ select   enter next   esc cancel")}`);
+  } else if (step === "name") {
+    const label =
+      FORM_TYPES[typeIdx].type === "export" ? "Variable name:" : "Name:";
+    lines.push(`  ${c.bold(label)}`);
+    lines.push(`  ${c.gray("▶")}  ${c.cyan(name || "")}${c.dim("█")}`);
+    lines.push("");
+    lines.push(`  ${c.dim("enter next   esc back")}`);
+  } else if (step === "value") {
+    const t = FORM_TYPES[typeIdx].type;
+    const labelMap: Record<CommandType, string> = {
+      alias: "Command:",
+      export: "Value:",
+      func: "Function body:",
+    };
+    const hint =
+      t === "func"
+        ? `  ${c.dim('tip: single line — e.g.  git add . && git commit -m "$1"')}`
+        : "";
+    lines.push(`  ${c.bold(labelMap[t])}${hint}`);
+    lines.push(`  ${c.gray("▶")}  ${c.cyan(value || "")}${c.dim("█")}`);
+    lines.push("");
+    lines.push(`  ${c.dim("enter next   esc back")}`);
+  } else if (step === "desc") {
+    lines.push(
+      `  ${c.bold("Description")} ${c.dim("(optional — shown in the list view):")}`,
+    );
+    lines.push(`  ${c.gray("▶")}  ${desc ? c.cyan(desc) : ""}${c.dim("█")}`);
+    lines.push("");
+    lines.push(`  ${c.dim("enter next   esc back")}`);
+  } else if (step === "file") {
+    lines.push(`  ${c.bold("Save to:")}`);
+    lines.push("");
+    if (files.length === 0) {
+      lines.push(`  ${c.red("No dotfiles found.")}`);
+    } else {
+      for (let i = 0; i < files.length; i++) {
+        const arrow = i === fileIdx ? c.cyan("▶") : " ";
+        lines.push(
+          `  ${arrow}  ${i === fileIdx ? c.bold(files[i].label) : c.dim(files[i].label)}`,
+        );
+      }
+    }
+    lines.push("");
+    lines.push(`  ${c.dim("↑↓ select   enter save   esc back")}`);
+  }
+
+  lines.push("");
   return lines.join("\n");
 }
 
@@ -196,7 +339,6 @@ function renderCommandDetail(cmd: Command, aiState: AIStatus | null): string {
     `  ${typeTag(cmd.type)}${cmd.danger ? " " + dangerBadge() : ""}  ${c.boldCyan(cmd.name)}`,
   );
   lines.push("");
-
   if (cmd.desc) lines.push(`  ${c.gray("desc")}   ${cmd.desc}`);
 
   if (aiState) {
@@ -220,8 +362,10 @@ function renderCommandDetail(cmd: Command, aiState: AIStatus | null): string {
   for (const rl of cmd.raw.split("\n")) lines.push(`    ${c.cyan(rl)}`);
   lines.push("");
 
-  const aiHint = !aiState ? `  ${c.dim("[ a ] explain with AI   ")}` : "";
-  lines.push(`  ${c.dim("[ c ] copy   [ q / esc ] back")}${aiHint}`);
+  const aiHint = !aiState ? `  ${c.dim("[ a ] AI   ")}` : "";
+  lines.push(
+    `  ${c.dim("[ e ] edit   [ c ] copy   [ q / esc ] back")}${aiHint}`,
+  );
   lines.push("");
   return lines.join("\n");
 }
@@ -265,7 +409,6 @@ function renderList(
       ` [${formatSourceFile(cmd.sourceFile).split("/").pop()}]`,
     );
     const row = `  ${tag} ${c.bold(name)}${danger}${desc}${src}`;
-
     lines.push(isSelected ? `\x1b[7m${row}\x1b[0m` : row);
   }
 
@@ -278,24 +421,20 @@ function renderList(
 
   lines.push("");
   lines.push(
-    `  ${c.dim("↑↓ navigate   enter expand   / search   tab filter   k keys   q quit")}`,
+    `  ${c.dim("↑↓ nav   enter expand   tab filter   n add   k keys   q quit")}`,
   );
   lines.push("");
   return lines.join("\n");
 }
 
-function clearScreen(): void {
-  process.stdout.write("\x1b[2J\x1b[H");
-}
-
 const FILTERS = ["all", "alias", "func", "export", "danger"] as const;
 
 export async function runInteractiveUI(
-  allCommands: Command[],
-  { search }: { search: SearchFn },
+  initialCommands: Command[],
+  { search, reload }: { search: SearchFn; reload: ReloadFn },
 ): Promise<void> {
   if (!process.stdin.isTTY) {
-    for (const cmd of allCommands) {
+    for (const cmd of initialCommands) {
       console.log(
         `${cmd.type.padEnd(8)} ${cmd.name.padEnd(24)} ${cmd.desc ?? ""}`,
       );
@@ -309,19 +448,31 @@ export async function runInteractiveUI(
   readline.emitKeypressEvents(process.stdin);
   process.stdin.setRawMode(true);
 
-  // list state
+  let allCommands = initialCommands;
+
   let query = "";
   let filterIdx = 0;
   let selected = 0;
   let scrollOffset = 0;
   let currentAiState: AIStatus | null = null;
 
-  // keys screen state
   let keysSelected = 0;
   let keysEditing = false;
   let keysEditBuf = "";
 
-  let mode: "splash" | "list" | "detail" | "keys" = "splash";
+  let formStep: FormStep = "type";
+  let formTypeIdx = 0;
+  let formName = "";
+  let formValue = "";
+  let formDesc = "";
+  let formFileIdx = 0;
+  let formFiles: DotFile[] = [];
+  let formIsEdit = false;
+  let formEditCmd: Command | null = null;
+  let formSavedTo = "";
+  let formError = "";
+
+  let mode: "splash" | "list" | "detail" | "keys" | "form" = "splash";
 
   function getFiltered(): ScoredCommand[] {
     const filter = FILTERS[filterIdx];
@@ -338,6 +489,33 @@ export async function runInteractiveUI(
       scrollOffset = selected - LIST_HEIGHT + 1;
   }
 
+  function openForm(cmd?: Command): void {
+    formFiles = discoverDotfiles();
+    formIsEdit = !!cmd;
+    formEditCmd = cmd ?? null;
+    formError = "";
+    formSavedTo = "";
+
+    if (cmd) {
+      formTypeIdx = FORM_TYPES.findIndex((ft) => ft.type === cmd.type);
+      if (formTypeIdx === -1) formTypeIdx = 0;
+      formName = cmd.name;
+      formValue = extractValue(cmd);
+      formDesc = cmd.desc ?? "";
+      formFileIdx = formFiles.findIndex((f) => f.path === cmd.sourceFile);
+      if (formFileIdx === -1) formFileIdx = 0;
+    } else {
+      formTypeIdx = 0;
+      formName = "";
+      formValue = "";
+      formDesc = "";
+      formFileIdx = 0;
+    }
+
+    formStep = "type";
+    mode = "form";
+  }
+
   function draw(): void {
     clearScreen();
     if (mode === "splash") {
@@ -346,6 +524,23 @@ export async function runInteractiveUI(
     }
     if (mode === "keys") {
       process.stdout.write(renderKeys(keysSelected, keysEditing, keysEditBuf));
+      return;
+    }
+    if (mode === "form") {
+      process.stdout.write(
+        renderForm(
+          formStep,
+          formTypeIdx,
+          formName,
+          formValue,
+          formDesc,
+          formFileIdx,
+          formFiles,
+          formIsEdit,
+          formSavedTo,
+          formError,
+        ),
+      );
       return;
     }
     const cmds = getFiltered();
@@ -391,7 +586,6 @@ export async function runInteractiveUI(
     if (mode === "keys") {
       if (keysEditing) {
         if (key.ctrl && key.name === "c") cleanExit(0);
-
         if (key.name === "return") {
           const trimmed = keysEditBuf.trim();
           if (trimmed) saveKey(PROVIDERS[keysSelected].envKey, trimmed);
@@ -411,9 +605,7 @@ export async function runInteractiveUI(
         }
         return;
       }
-
       if (key.ctrl && key.name === "c") cleanExit(0);
-
       if (key.name === "escape" || key.name === "q") {
         mode = "list";
         draw();
@@ -434,20 +626,145 @@ export async function runInteractiveUI(
       return;
     }
 
+    if (mode === "form") {
+      if (key.ctrl && key.name === "c") cleanExit(0);
+
+      // confirm step: any key → reload list
+      if (formStep === "confirm") {
+        allCommands = reload();
+        mode = "list";
+        draw();
+        return;
+      }
+
+      if (formStep === "type") {
+        if (key.name === "escape") {
+          mode = "list";
+          draw();
+        } else if (key.name === "up") {
+          formTypeIdx = Math.max(0, formTypeIdx - 1);
+          draw();
+        } else if (key.name === "down") {
+          formTypeIdx = Math.min(FORM_TYPES.length - 1, formTypeIdx + 1);
+          draw();
+        } else if (key.name === "return") {
+          formError = "";
+          formStep = "name";
+          draw();
+        }
+      } else if (formStep === "name") {
+        if (key.name === "escape") {
+          formStep = "type";
+          draw();
+        } else if (key.name === "return") {
+          if (!formName.trim()) {
+            formError = "Name cannot be empty.";
+            draw();
+            return;
+          }
+          formError = "";
+          formStep = "value";
+          draw();
+        } else if (key.name === "backspace") {
+          formName = formName.slice(0, -1);
+          formError = "";
+          draw();
+        } else if (str && str.length === 1 && !key.ctrl && !key.meta) {
+          formName += str;
+          formError = "";
+          draw();
+        }
+      } else if (formStep === "value") {
+        if (key.name === "escape") {
+          formStep = "name";
+          draw();
+        } else if (key.name === "return") {
+          if (!formValue.trim()) {
+            formError = "Value cannot be empty.";
+            draw();
+            return;
+          }
+          formError = "";
+          formStep = "desc";
+          draw();
+        } else if (key.name === "backspace") {
+          formValue = formValue.slice(0, -1);
+          formError = "";
+          draw();
+        } else if (str && str.length === 1 && !key.ctrl && !key.meta) {
+          formValue += str;
+          formError = "";
+          draw();
+        }
+      } else if (formStep === "desc") {
+        if (key.name === "escape") {
+          formStep = "value";
+          draw();
+        } else if (key.name === "return") {
+          formError = "";
+          formStep = "file";
+          draw();
+        } else if (key.name === "backspace") {
+          formDesc = formDesc.slice(0, -1);
+          draw();
+        } else if (str && str.length === 1 && !key.ctrl && !key.meta) {
+          formDesc += str;
+          draw();
+        }
+      } else if (formStep === "file") {
+        if (key.name === "escape") {
+          formStep = "desc";
+          draw();
+        } else if (key.name === "up") {
+          formFileIdx = Math.max(0, formFileIdx - 1);
+          draw();
+        } else if (key.name === "down") {
+          formFileIdx = Math.min(formFiles.length - 1, formFileIdx + 1);
+          draw();
+        } else if (key.name === "return") {
+          if (formFiles.length === 0) return;
+          const target: DotFile = formFiles[formFileIdx];
+          const newCmd: NewCommand = {
+            type: FORM_TYPES[formTypeIdx].type,
+            name: formName.trim(),
+            value: formValue.trim(),
+            desc: formDesc.trim(),
+          };
+          try {
+            if (formIsEdit && formEditCmd) {
+              replaceCommand(formEditCmd, newCmd, target.path);
+            } else {
+              appendCommand(newCmd, target.path);
+            }
+            formSavedTo = target.label;
+            formError = "";
+            formStep = "confirm";
+            draw();
+          } catch (err) {
+            formError = (err as Error).message;
+            draw();
+          }
+        }
+      }
+      return;
+    }
+
     if (mode === "detail") {
+      const cmds = getFiltered();
       if (key.name === "q" || key.name === "escape") {
         mode = "list";
         currentAiState = null;
         draw();
       } else if (str === "c") {
-        const cmds = getFiltered();
         if (cmds[selected])
           try {
             execCopy(cmds[selected].raw);
           } catch {}
       } else if (str === "a") {
-        const cmds = getFiltered();
         if (cmds[selected] && !currentAiState) triggerAI(cmds[selected]);
+      } else if (str === "e") {
+        if (cmds[selected]) openForm(cmds[selected]);
+        draw();
       }
       return;
     }
@@ -477,6 +794,9 @@ export async function runInteractiveUI(
         currentAiState = null;
         draw();
       }
+    } else if (str === "n") {
+      openForm();
+      draw();
     } else if (str === "k") {
       mode = "keys";
       keysSelected = 0;

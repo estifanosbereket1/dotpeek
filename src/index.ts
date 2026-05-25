@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+
 import { discoverDotfiles, readDotfile } from "./discover";
 import { parseDotfile } from "./parser";
 import { search } from "./search";
@@ -8,7 +9,7 @@ import { runInit, printSnippet } from "./shell";
 import { applyStoredKeys } from "./keys";
 import { Command } from "./types";
 
-const VERSION = "1.2.0";
+const VERSION = "1.3.0";
 
 const HELP = `
 ${c.boldCyan("dotpeek")} ${c.dim(`v${VERSION}`)} — browse & search your shell commands
@@ -30,10 +31,12 @@ ${c.bold("Interactive mode keys:")}
   enter        expand command
   a            explain with AI
   c            copy raw command
+  e            edit command (in detail view)
+  n            add new command
   k            manage AI keys
   type         search / filter
   tab          cycle type filter
-  esc          clear search
+  esc          clear search / go back
   q            quit
 
 ${c.bold("Shell integration (after dotpeek init):")}
@@ -42,7 +45,7 @@ ${c.bold("Shell integration (after dotpeek init):")}
   ctrl+p                           open dotpeek inline at any prompt
 `;
 
-function loadAll(): {
+export function loadAll(): {
   files: ReturnType<typeof discoverDotfiles>;
   allCommands: Command[];
 } {
@@ -68,7 +71,6 @@ function printCommand(cmd: Command): void {
 }
 
 async function main(): Promise<void> {
-  // load keys saved via the in-app key manager before anything else
   applyStoredKeys();
 
   const args = process.argv.slice(2);
@@ -163,7 +165,10 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  await runInteractiveUI(allCommands, { search });
+  await runInteractiveUI(allCommands, {
+    search,
+    reload: () => loadAll().allCommands,
+  });
 }
 
 main().catch((err) => {
